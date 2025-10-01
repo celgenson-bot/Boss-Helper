@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Boss Helper 👑</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root{--bg:#0b0f17;--card:#121827;--ink:#e7eef7;--muted:#9fb0c7;--acc:#69e6a6;--border:#1f2a44}
+  *{box-sizing:border-box}
+  body{margin:0;background:#0b0f17;color:var(--ink);font:16px/1.5 system-ui,Segoe UI,Roboto,Arial}
+  .wrap{max-width:920px;margin:0 auto;padding:18px;display:grid;gap:14px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px}
+  h1{margin:0 0 6px 0;font-size:20px}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .grid{display:grid;gap:10px}
+  label{font-size:12px;color:var(--muted)}
+  input,button,textarea{background:#0f1524;color:var(--ink);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+  input,textarea{width:100%}
+  button{cursor:pointer}
+  .accent{background:linear-gradient(90deg,#69e6a6,#7ab6ff);border:none;color:#0b1020;font-weight:700}
+  .messages{display:flex;flex-direction:column;gap:10px;max-height:65vh;overflow:auto}
+  .msg{display:grid;grid-template-columns:36px 1fr;gap:10px;border:1px solid var(--border);border-radius:10px;padding:10px;background:#0c1220}
+  .msg.ai{background:#101a2a;border-color:#22304b}
+  .avatar{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#0f1524;border:1px solid var(--border);font-weight:700}
+  .tiny{font-size:12px;color:var(--muted)}
+  .right{justify-content:flex-end}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>Boss Helper 👑</h1>
+    <div class="tiny">Ready Boss. API key + Speak + Mic + Cam, lahat magkatabi.</div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div class="card">
+    <h2 style="margin:0 0 8px">Settings</h2>
+    <div class="grid">
+      <div>
+        <label>OpenAI API Key (session-only; not saved)</label>
+        <input id="openaiKey" type="password" placeholder="sk-..." />
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label><input type="checkbox" id="speak" checked /> Speak</label>
+      <button id="mic">🎤 Mic</button>
+      <button id="cam">📷 Cam</button>
+    </div>
+  </div>
+
+  <!-- CHAT -->
+  <div class="card">
+    <h2 style="margin:0 0 8px">Chat</h2>
+    <div class="grid">
+      <textarea id="input" rows="6" placeholder="Ask anything…"></textarea>
+      <div class="row right">
+        <button id="send" class="accent">Send</button>
+        <button id="clear">Clear</button>
+      </div>
+    </div>
+    <div class="messages" id="feed" style="margin-top:12px"></div>
+  </div>
+</div>
+
+<!-- Hidden video/canvas for OCR -->
+<video id="video" autoplay playsinline style="display:none;"></video>
+<canvas id="canvas" style="display:none;"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+  const $ = id => document.getElementById(id);
+
+  function addMsg(role, html){
+    const el = document.createElement('div');
+    el.className = 'msg' + (role==='ai'?' ai':'');
+    el.innerHTML = `<div class="avatar">${role==='ai'?'AI':'You'}</div><div>${html}</div>`;
+    const feed = $('feed'); feed.appendChild(el); feed.scrollTop = feed.scrollHeight;
+  }
+
+  const BOSS_PROMPT = `
+You are an AI helper created to serve your Boss.
+The person chatting with you is your Boss.
+
+Rules:
+- Always acknowledge the user respectfully as "Boss".
+- If asked "Who is your boss?", answer "You are my Boss, and I am your helper."
+- Keep answers clear, structured, and concise.
+`;
+
+  async function callOpenAI(key, messages){
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "Authorization":"Bearer " + key
+      },
+      body: JSON.stringify({
+        model:"gpt-4o-mini",
+        messages,
+        temperature:0.4
+      })
+    });
+    if(!r.ok){
+      const t = await r.text();
+      throw new Error("OpenAI error: " + t);
+    }
+    const data = await r.json();
+    return data.choices?.[0]?.message?.content || "(no content)";
+  }
+
+  // Send button
+  $("send").onclick = async ()=>{
+    const txt = $("input").value.trim();
+    if(!txt) return;
+
+    $("input").value = "";
+    addMsg("you", txt);
+
+    const key = $("openaiKey").value.trim();
+    if(!key){
+      addMsg("ai","<b>⚠️ Missing API Key</b>");
+      return;
+    }
+
+    addMsg("ai","Thinking…");
+
+    try{
+      const reply = await callOpenAI(key, [
+        { role:"system", content:BOSS_PROMPT },
+        { role:"user", content:txt }
+      ]);
+      const feed = $("feed"); feed.removeChild(feed.lastElementChild);
+      addMsg("ai", reply);
+      if($("speak").checked){
+        const u = new SpeechSynthesisUtterance(reply);
+        speechSynthesis.cancel();
+        speechSynthesis.speak(u);
+      }
+    }catch(err){
+      const feed = $("feed"); feed.removeChild(feed.lastElementChild);
+      addMsg("ai","<b>⚠️ Error:</b> " + err.message);
+    }
+  };
+
+  $("clear").onclick = ()=> $("feed").innerHTML = "";
+
+  // Mic (live dictation)
+  let recognition;
+  if ('webkitSpeechRecognition' in window) {
+    recognition = new webkitSpeechRecognition();
+    recognition.lang = 'en-US';
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.onresult = function(e) {
+      let transcript = '';
+      for (let i = e.resultIndex; i < e.results.length; ++i) {
+        transcript += e.results[i][0].transcript;
+      }
+      $('input').value = transcript;
+    };
+  }
+  $('mic').onclick = ()=> recognition ? recognition.start() : alert('Mic not supported');
+
+  // Cam OCR
+  const video = $('video'), canvas = $('canvas'), ctx = canvas.getContext('2d');
+  async function startCam() {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    video.srcObject = stream;
+    video.style.display = 'block';
+  }
+  async function captureAndRead() {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0);
+    const { data: { text } } = await Tesseract.recognize(canvas, 'eng');
+    $('input').value += "\\n" + text.trim();
+    addMsg('ai', '<i class="tiny">📖 OCR text added.</i>');
+  }
+  $('cam').onclick = async ()=> video.style.display==='none' ? await startCam() : await captureAndRead();
+</script>
+</body>
+</html>
